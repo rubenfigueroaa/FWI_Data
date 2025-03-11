@@ -1,0 +1,121 @@
+// Define Region of Interest (ROI)
+var selecta = ee.Geometry.Rectangle([81.00, 16.30, 81.50, 17.00]); // Andhra Pradesh
+Map.centerObject(selecta, 12);
+Map.addLayer(selecta, {color: 'red'}, 'Selected Area');
+
+// Load Sentinel-2 Image Collection, filter by date and cloud coverage
+var image = ee.ImageCollection("COPERNICUS/S2_SR")
+  .filterBounds(selecta)
+  .filterDate('2024-01-01', '2024-07-01')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+  .select(['B3', 'B4', 'B8', 'B2'])
+  .median();
+
+// Compute NDWI using (Green - NIR) / (Green + NIR)
+var ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI');
+
+// Threshold NDWI to identify water bodies
+var waterMask = ndwi.gt(0.05); // Adjust threshold if needed
+
+// Define 8-connected kernel
+var kernel = ee.Kernel.square(1);
+
+// Label connected water bodies
+var connectedComponents = waterMask.selfMask().connectedComponents(kernel, 128); 
+
+// Extract labeled image (each pond gets a unique ID)
+var waterLabels = connectedComponents.select('labels');
+
+// Count unique pond IDs
+var pondCount = waterLabels.reduceRegion({
+  reducer: ee.Reducer.countDistinct(),
+  geometry: selecta,
+  scale: 10,
+  maxPixels: 1e8
+});
+print('Number of ponds detected:', pondCount);
+
+// ==============================
+// Landsat 8 Land Surface Temperature
+// ==============================
+var lst = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+  .filterBounds(selecta)
+  .filterDate('2024-01-01', '2024-07-01')
+  .filter(ee.Filter.lt('CLOUD_COVER', 10))
+  .select(['ST_B10']) 
+  .median();
+
+// Convert Kelvin to Celsius
+var lstCelsius = lst.multiply(0.00341802).add(149).subtract(273.15).rename('LST_Celsius');
+
+// Mask LST to only display values for segmented ponds
+var lstForPonds = lstCelsius.mask(waterLabels);
+
+// ==============================
+// Calculate Turbidity Index (TI)
+// ==============================
+var turbidity = image.expression(
+  '(B2 - B3) / (B2 + B3)', {
+    'B2': image.select('B2'), // Blue Band
+    'B3': image.select('B3')  // Green Band
+}).rename('Turbidity');
+
+var turbidityForPonds = turbidity.mask(waterLabels);
+
+// ==============================
+// Calculate Chlorophyll-a Index (CI)
+// ==============================
+var chlorophyll_a = image.expression(
+  '(B8 / B4) - 1', {
+    'B8': image.select('B8'), // NIR Band
+    'B4': image.select('B4')  // Red Band
+}).rename('Chlorophyll_a');
+
+var chlorophyllForPonds = chlorophyll_a.mask(waterLabels);
+
+// ==============================
+// Convert labeled image to FeatureCollection
+// ==============================
+var pondPolygons = waterLabels.selfMask().reduceToVectors({
+  geometry: selecta,
+  geometryType: 'polygon',
+  reducer: ee.Reducer.countEvery(),
+  scale: 10, 
+  maxPixels: 1e8
+});
+
+// ==============================
+// Calculate Median Values for Each Pond
+// ==============================
+var pondStats = lstForPonds.addBands(turbidityForPonds).addBands(chlorophyllForPonds)
+  .reduceRegions({
+    collection: pondPolygons,
+    reducer: ee.Reducer.median(),
+    scale: 10,
+    tileScale: 4
+  });
+
+// ==============================
+// Remove Coordinates for Faster Export
+// ==============================
+var finalPondStats = pondStats.map(function(feature) {
+  return feature.select(['system:index', 'LST_Celsius', 'Turbidity', 'Chlorophyll_a']);
+});
+
+// ==============================
+// Export to CSV (No Coordinates)
+// ==============================
+Export.table.toDrive({
+  collection: finalPondStats,
+  description: 'Pond_Stats_Export',
+  fileFormat: 'CSV',
+  selectors: ['system:index', 'LST_Celsius', 'Turbidity', 'Chlorophyll_a']
+});
+
+// ==============================
+// Display Layers
+// ==============================
+Map.addLayer(lstForPonds, {min: 20, max: 40, palette: ['blue', 'yellow', 'red']}, 'LST for Ponds');
+Map.addLayer(turbidityForPonds, {min: -1, max: 1, palette: ['white', 'brown']}, 'Turbidity for Ponds');
+Map.addLayer(chlorophyllForPonds, {min: -1, max: 3, palette: ['green', 'darkgreen']}, 'Chlorophyll-a for Ponds');
+Map.addLayer(pondPolygons, {color: 'green'}, 'Pond Boundaries');
