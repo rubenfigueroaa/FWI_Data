@@ -1,0 +1,46 @@
+// Define the geometry (study area)
+var geometry = ee.Geometry.Rectangle([81.00, 16.30, 81.50, 17.00]); // Replace with your coordinates
+Map.centerObject(geometry, 12);
+Map.addLayer(geometry, {color: 'red'}, 'Selected Area');
+
+// Set the time frame
+var iniDate = '2024-01-01'; // Start date
+var endDate = '2024-12-31'; // End date
+
+// Set the cloud percentage threshold
+var cloudPerc = 15; // Allow images with up to 10% cloud cover
+
+// Import the Sentinel-2 collection
+var MSI = ee.ImageCollection('COPERNICUS/S2');
+
+// Filter Sentinel-2 collection
+var FC = MSI.filterDate(iniDate, endDate)
+            .filterBounds(geometry)
+            .filterMetadata('CLOUDY_PIXEL_PERCENTAGE', "less_than", cloudPerc);
+
+// Function to extract the date from the image collection
+var extractDate = function(image) {
+  // Get the image ID
+  var imageId = image.id();
+  // Extract the date from the image's metadata
+  var imageDate = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd');
+  
+  // Print the ID and date
+  return ee.Feature(null, {
+    'image_id': imageId,
+    'date': imageDate
+  });
+};
+
+// Apply the function to each image in the collection
+var imageWithDate = FC.map(extractDate);
+
+// Print the results to the console
+print('Images with Dates:', imageWithDate);
+
+// Optionally, you can export the results to a table for further analysis
+Export.table.toDrive({
+  collection: imageWithDate,
+  description: 'Sentinel_Images_with_Dates',
+  fileFormat: 'CSV'
+});
