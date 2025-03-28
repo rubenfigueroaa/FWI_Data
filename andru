@@ -1,0 +1,37 @@
+//Merge cells for pond oversegmentation
+// Define Region of Interest (ROI)
+var selecta = ee.Geometry.Rectangle([81.00, 16.30, 81.50, 17.00]); // Andhra Pradesh
+Map.centerObject(selecta, 12);
+Map.addLayer(selecta, {color: 'red'}, 'Selected Area');
+
+// Load Sentinel-2 Image Collection, filter by date and cloud coverage
+var image = ee.ImageCollection("COPERNICUS/S2_SR")
+  .filterBounds(selecta)
+  .filterDate('2024-01-01', '2024-07-01')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+  .select(['B3', 'B4', 'B8', 'B2'])
+  .median();
+
+// Compute NDWI using (Green - NIR) / (Green + NIR)
+var ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI');
+
+// Threshold NDWI to identify water bodies
+var waterMask = ndwi.gt(0.05); // Adjust threshold if needed
+
+// Define 8-connected kernel
+var kernel = ee.Kernel.square(1);
+
+// Label connected water bodies
+var connectedComponents = waterMask.selfMask().connectedComponents(kernel, 128); 
+
+// Extract labeled image (each pond gets a unique ID)
+var waterLabels = connectedComponents.select('labels');
+
+// Count unique pond IDs
+var pondCount = waterLabels.reduceRegion({
+  reducer: ee.Reducer.countDistinct(),
+  geometry: selecta,
+  scale: 10,
+  maxPixels: 1e8
+});
+print('Number of ponds detected:', pondCount);
